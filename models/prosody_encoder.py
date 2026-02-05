@@ -80,17 +80,20 @@ class ProsodyEncoder(nn.Module):
         # Voiced/unvoiced embedding
         self.voiced_embedding = nn.Embedding(2, hidden_size // 4)
         
+        # Combined dimension: f0_lstm(hidden) + energy_lstm(hidden//2) + voiced_emb(hidden//4)
+        combined_dim = hidden_size + hidden_size // 2 + hidden_size // 4
+        
         # Attention for prosody
         if use_attention:
             self.attention = nn.MultiheadAttention(
-                embed_dim=hidden_size + hidden_size // 2,
+                embed_dim=combined_dim,
                 num_heads=4,
                 dropout=dropout,
                 batch_first=True
             )
         
         # Fusion layer
-        fusion_input_size = hidden_size + hidden_size // 2 + hidden_size // 4
+        fusion_input_size = combined_dim
         self.fusion = nn.Sequential(
             nn.Linear(fusion_input_size, hidden_size),
             nn.ReLU(),
