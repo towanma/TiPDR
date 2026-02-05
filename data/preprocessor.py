@@ -10,8 +10,8 @@ from tqdm import tqdm
 import numpy as np
 import torch
 
-from ..utils.audio import AudioProcessor
-from ..utils.f0_extractor import F0Extractor
+from utils.audio import AudioProcessor
+from utils.f0_extractor import F0Extractor
 
 
 class DataPreprocessor:
