@@ -199,10 +199,18 @@ class AdversarialLoss(nn.Module):
         
         # Prosody discriminator (predicting content from prosody)
         if prosody_disc_logits is not None and content_indices is not None:
+            # Handle potential length mismatch
+            B, T_prosody, C = prosody_disc_logits.shape
+            T_content = content_indices.shape[1]
+            
+            # Align to shorter length
+            T_min = min(T_prosody, T_content)
+            prosody_disc_aligned = prosody_disc_logits[:, :T_min, :]
+            indices_aligned = content_indices[:, :T_min]
+            
             # Flatten: [B, T, C] -> [B*T, C], [B, T] -> [B*T]
-            B, T, C = prosody_disc_logits.shape
-            prosody_disc_flat = prosody_disc_logits.view(-1, C)
-            indices_flat = content_indices.view(-1)
+            prosody_disc_flat = prosody_disc_aligned.reshape(-1, C)
+            indices_flat = indices_aligned.reshape(-1)
             
             prosody_adv_loss = F.cross_entropy(
                 prosody_disc_flat,
