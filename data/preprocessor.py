@@ -2,13 +2,15 @@
 
 import os
 import json
+import gc
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 
 import numpy as np
 import torch
+import librosa
+import soundfile as sf
 
 from utils.audio import AudioProcessor
 from utils.f0_extractor import F0Extractor
@@ -53,58 +55,68 @@ class DataPreprocessor:
         self, 
         audio_path: str, 
         output_path: Optional[str] = None
-    ) -> Dict[str, np.ndarray]:
+    ) -> Optional[Dict[str, np.ndarray]]:
         """Preprocess a single audio file."""
-        # Load audio
-        waveform, _ = self.audio_processor.load_audio(audio_path)
-        waveform = waveform.squeeze(0)
-        waveform = self.audio_processor.normalize_audio(waveform)
-        waveform_np = waveform.numpy()
-        
-        # Extract mel spectrogram
-        mel = self.audio_processor.extract_mel_spectrogram_numpy(
-            waveform_np, 
-            normalize=False  # We'll do global normalization later
-        )
-        
-        # Extract prosody features
-        prosody = self.f0_extractor.extract_prosody_features(waveform_np)
-        
-        features = {
-            "mel": mel,
-            "f0": prosody["f0"],
-            "f0_norm": prosody["f0_norm"],
-            "f0_interp": prosody["f0_interp"],
-            "voiced": prosody["voiced"],
-            "energy": prosody["energy"],
-            "waveform": waveform_np
-        }
-        
-        # Save if output path specified
-        if output_path:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            np.savez_compressed(output_path, **features)
-        
-        return features
+        try:
+            # Load audio using soundfile (more reliable)
+            waveform, sr = sf.read(audio_path)
+            
+            # Convert to mono if stereo
+            if len(waveform.shape) > 1:
+                waveform = waveform.mean(axis=1)
+            
+            # Resample if needed
+            if sr != self.sample_rate:
+                waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.sample_rate)
+            
+            # Normalize
+            waveform = waveform.astype(np.float32)
+            waveform = waveform / (np.abs(waveform).max() + 1e-8)
+            
+            # Extract mel spectrogram
+            mel = librosa.feature.melspectrogram(
+                y=waveform,
+                sr=self.sample_rate,
+                n_fft=1280,
+                hop_length=self.hop_length,
+                n_mels=self.n_mels,
+                fmin=0,
+                fmax=8000
+            )
+            mel = np.log(np.clip(mel, a_min=1e-5, a_max=None))
+            
+            # Extract prosody features
+            prosody = self.f0_extractor.extract_prosody_features(waveform)
+            
+            features = {
+                "mel": mel.astype(np.float32),
+                "f0": prosody["f0"].astype(np.float32),
+                "f0_norm": prosody["f0_norm"].astype(np.float32),
+                "f0_interp": prosody["f0_interp"].astype(np.float32),
+                "voiced": prosody["voiced"],
+                "energy": prosody["energy"].astype(np.float32),
+                "waveform": waveform
+            }
+            
+            # Save if output path specified
+            if output_path:
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                np.savez_compressed(output_path, **features)
+            
+            return features
+            
+        except Exception as e:
+            print(f"Error processing {audio_path}: {e}")
+            return None
     
     def preprocess_dataset(
         self,
         data_root: str,
         metadata_path: Optional[str] = None,
-        num_workers: int = 4,
+        num_workers: int = 1,  # Use single worker to avoid file handle issues
         save_features: bool = True
     ) -> Dict[str, Dict]:
-        """Preprocess entire dataset.
-        
-        Args:
-            data_root: Root directory containing dialect subdirectories
-            metadata_path: Path to save/load metadata
-            num_workers: Number of parallel workers
-            save_features: Whether to save preprocessed features to disk
-            
-        Returns:
-            metadata: Dictionary with file info and statistics
-        """
+        """Preprocess entire dataset."""
         data_root = Path(data_root)
         
         # Collect all audio files
@@ -112,6 +124,7 @@ class DataPreprocessor:
         for dialect in ["lhasa", "kham", "amdo"]:
             dialect_dir = data_root / dialect
             if not dialect_dir.exists():
+                print(f"Warning: {dialect_dir} does not exist")
                 continue
             
             for audio_file in dialect_dir.rglob("*.wav"):
@@ -119,6 +132,12 @@ class DataPreprocessor:
                 audio_files.append((str(audio_file), rel_path))
         
         print(f"Found {len(audio_files)} audio files")
+        
+        if len(audio_files) == 0:
+            print("No audio files found! Check your data_root path.")
+            print(f"Looking in: {data_root}")
+            print(f"Expected structure: {data_root}/lhasa/speaker_xxx/*.wav")
+            return {"files": {}, "statistics": {}}
         
         # Process files
         metadata = {}
@@ -134,70 +153,55 @@ class DataPreprocessor:
         if save_features:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process with progress bar
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = {}
+        # Process sequentially to avoid file handle issues
+        for audio_path, rel_path in tqdm(audio_files, desc="Preprocessing"):
+            output_path = None
+            if save_features:
+                output_path = str(self.output_dir / rel_path.replace(".wav", ".npz"))
             
-            for audio_path, rel_path in audio_files:
-                output_path = None
-                if save_features:
-                    output_path = str(
-                        self.output_dir / rel_path.replace(".wav", ".npz")
-                    )
-                
-                future = executor.submit(
-                    self.preprocess_file,
-                    audio_path,
-                    output_path
-                )
-                futures[future] = rel_path
+            features = self.preprocess_file(audio_path, output_path)
             
-            for future in tqdm(
-                as_completed(futures), 
-                total=len(futures),
-                desc="Preprocessing"
-            ):
-                rel_path = futures[future]
-                try:
-                    features = future.result()
-                    
-                    # Extract path components
-                    parts = rel_path.split(os.sep)
-                    dialect = parts[0]
-                    speaker_id = parts[1] if len(parts) > 1 else "unknown"
-                    
-                    # Store metadata
-                    metadata[rel_path] = {
-                        "speaker_id": speaker_id,
-                        "dialect": dialect,
-                        "has_tone": dialect in ["lhasa", "kham"],
-                        "duration": len(features["waveform"]) / self.sample_rate,
-                        "num_frames": features["mel"].shape[1]
-                    }
-                    
-                    # Collect statistics
-                    stats["mel_mean"].append(features["mel"].mean())
-                    stats["mel_std"].append(features["mel"].std())
-                    
-                    voiced_f0 = features["f0"][features["voiced"]]
-                    if len(voiced_f0) > 0:
-                        stats["f0_mean"].append(voiced_f0.mean())
-                        stats["f0_std"].append(voiced_f0.std())
-                    
-                    stats["energy_mean"].append(features["energy"].mean())
-                    stats["energy_std"].append(features["energy"].std())
-                    
-                except Exception as e:
-                    print(f"Error processing {rel_path}: {e}")
+            if features is None:
+                continue
+            
+            # Extract path components
+            parts = rel_path.split(os.sep)
+            dialect = parts[0]
+            speaker_id = parts[1] if len(parts) > 1 else "unknown"
+            
+            # Store metadata
+            metadata[rel_path] = {
+                "speaker_id": speaker_id,
+                "dialect": dialect,
+                "has_tone": dialect in ["lhasa", "kham"],
+                "duration": len(features["waveform"]) / self.sample_rate,
+                "num_frames": features["mel"].shape[1]
+            }
+            
+            # Collect statistics
+            stats["mel_mean"].append(features["mel"].mean())
+            stats["mel_std"].append(features["mel"].std())
+            
+            voiced_f0 = features["f0"][features["voiced"]]
+            if len(voiced_f0) > 0:
+                stats["f0_mean"].append(voiced_f0.mean())
+                stats["f0_std"].append(voiced_f0.std())
+            
+            stats["energy_mean"].append(features["energy"].mean())
+            stats["energy_std"].append(features["energy"].std())
+            
+            # Clean up memory periodically
+            del features
+            gc.collect()
         
         # Compute global statistics
         global_stats = {
-            "mel_mean": float(np.mean(stats["mel_mean"])),
-            "mel_std": float(np.mean(stats["mel_std"])),
+            "mel_mean": float(np.mean(stats["mel_mean"])) if stats["mel_mean"] else 0.0,
+            "mel_std": float(np.mean(stats["mel_std"])) if stats["mel_std"] else 1.0,
             "f0_mean": float(np.mean(stats["f0_mean"])) if stats["f0_mean"] else 0.0,
             "f0_std": float(np.mean(stats["f0_std"])) if stats["f0_std"] else 1.0,
-            "energy_mean": float(np.mean(stats["energy_mean"])),
-            "energy_std": float(np.mean(stats["energy_std"]))
+            "energy_mean": float(np.mean(stats["energy_mean"])) if stats["energy_mean"] else 0.0,
+            "energy_std": float(np.mean(stats["energy_std"])) if stats["energy_std"] else 1.0
         }
         
         # Save metadata
@@ -213,54 +217,12 @@ class DataPreprocessor:
         }
         
         if metadata_path:
+            os.makedirs(os.path.dirname(metadata_path) if os.path.dirname(metadata_path) else ".", exist_ok=True)
             with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(full_metadata, f, indent=2, ensure_ascii=False)
+            print(f"Metadata saved to {metadata_path}")
         
         return full_metadata
-    
-    def compute_speaker_statistics(
-        self,
-        data_root: str,
-        metadata: Dict
-    ) -> Dict[str, Dict[str, float]]:
-        """Compute per-speaker statistics for normalization."""
-        speaker_stats = {}
-        
-        for rel_path, info in metadata["files"].items():
-            speaker_id = info["speaker_id"]
-            
-            # Load preprocessed features
-            feature_path = self.output_dir / rel_path.replace(".wav", ".npz")
-            if not feature_path.exists():
-                continue
-            
-            features = np.load(feature_path)
-            
-            if speaker_id not in speaker_stats:
-                speaker_stats[speaker_id] = {
-                    "f0_values": [],
-                    "energy_values": []
-                }
-            
-            voiced_f0 = features["f0"][features["voiced"]]
-            speaker_stats[speaker_id]["f0_values"].extend(voiced_f0.tolist())
-            speaker_stats[speaker_id]["energy_values"].extend(
-                features["energy"].tolist()
-            )
-        
-        # Compute statistics
-        for speaker_id in speaker_stats:
-            f0_vals = np.array(speaker_stats[speaker_id]["f0_values"])
-            energy_vals = np.array(speaker_stats[speaker_id]["energy_values"])
-            
-            speaker_stats[speaker_id] = {
-                "f0_mean": float(f0_vals.mean()) if len(f0_vals) > 0 else 0.0,
-                "f0_std": float(f0_vals.std()) if len(f0_vals) > 0 else 1.0,
-                "energy_mean": float(energy_vals.mean()),
-                "energy_std": float(energy_vals.std())
-            }
-        
-        return speaker_stats
     
     def split_dataset(
         self,
@@ -270,16 +232,11 @@ class DataPreprocessor:
         test_ratio: float = 0.1,
         by_speaker: bool = True
     ) -> Tuple[List[str], List[str], List[str]]:
-        """Split dataset into train/val/test sets.
+        """Split dataset into train/val/test sets."""
+        files = list(metadata.get("files", {}).keys())
         
-        Args:
-            metadata: Dataset metadata
-            train_ratio: Proportion for training
-            val_ratio: Proportion for validation
-            test_ratio: Proportion for testing
-            by_speaker: If True, split by speaker to avoid speaker leakage
-        """
-        files = list(metadata["files"].keys())
+        if len(files) == 0:
+            return [], [], []
         
         if by_speaker:
             # Group by speaker
