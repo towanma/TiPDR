@@ -279,30 +279,20 @@ class MutualInformationLoss(nn.Module):
             content_global = content.mean(dim=1)  # [B, D_c]
             prosody_global = prosody.mean(dim=1)  # [B, D_p]
             
-            # Handle different dimensions by computing cross-correlation matrix
-            # instead of element-wise product
             B = content.size(0)
-            D_c = content_global.size(1)
-            D_p = prosody_global.size(1)
             
-            # Normalize
-            content_norm = F.normalize(content_global, dim=-1)  # [B, D_c]
-            prosody_norm = F.normalize(prosody_global, dim=-1)  # [B, D_p]
+            # Center the features
+            content_centered = content_global - content_global.mean(dim=0, keepdim=True)
+            prosody_centered = prosody_global - prosody_global.mean(dim=0, keepdim=True)
             
-            # Compute cross-correlation: [B, D_c] x [B, D_p]^T -> scalar per batch
-            # Use matrix multiplication to get correlation
-            cross_corr = torch.bmm(
-                content_norm.unsqueeze(1),  # [B, 1, D_c]
-                prosody_norm.unsqueeze(2)   # [B, D_p, 1] - but need [B, D_c, 1]
-            )
-            # Actually, just compute variance-based independence
-            # Minimize the mean absolute correlation between all pairs
-            corr_matrix = content_norm.unsqueeze(2) * prosody_norm.unsqueeze(1)  # [B, D_c, D_p]
-            pos_sim = corr_matrix.abs().mean()
+            # Compute cross-covariance matrix: [D_c, B] x [B, D_p] = [D_c, D_p]
+            cross_cov = torch.mm(content_centered.t(), prosody_centered) / B
             
-            # MI loss: minimize correlation
-            mi_loss = self.weight * pos_sim
-            mi_estimate = pos_sim
+            # MI estimate: Frobenius norm of cross-covariance (should be low for independence)
+            mi_estimate = cross_cov.pow(2).sum().sqrt()
+            
+            # MI loss: minimize cross-covariance
+            mi_loss = self.weight * mi_estimate
             
         else:
             # Simple correlation-based
