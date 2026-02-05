@@ -1,0 +1,39 @@
+# Core dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.0
+pyworld>=0.3.0
+resampy>=0.4.0
+
+# Data processing
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+
+# Machine learning utilities
+scikit-learn>=1.2.0
+
+# Configuration
+pyyaml>=6.0
+omegaconf>=2.3.0
+
+# Visualization and logging
+tensorboard>=2.12.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+tqdm>=4.65.0
+
+# Optional: CREPE for F0 extraction (alternative to pyworld)
+# crepe>=0.0.16
+
+# Optional: Better audio augmentation
+# audiomentations>=0.30.0
+
+# Development
+black>=23.0.0
+isort>=5.12.0
+pytest>=7.3.0

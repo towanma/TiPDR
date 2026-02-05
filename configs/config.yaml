@@ -1,0 +1,132 @@
+# Tibetan Prosody-Disentangled HuBERT Configuration
+
+# Data settings
+data:
+  train_path: "data/train"
+  val_path: "data/val"
+  test_path: "data/test"
+  sample_rate: 16000
+  max_audio_len: 10.0  # seconds
+  hop_length: 320
+  win_length: 1280
+  n_fft: 1280
+  n_mels: 80
+  
+  # Dialect labels: 0=Lhasa (卫藏), 1=Kham (康巴), 2=Amdo (安多)
+  dialects: ["lhasa", "kham", "amdo"]
+  tonal_dialects: ["lhasa", "kham"]  # 有声调方言
+  non_tonal_dialects: ["amdo"]       # 无声调方言
+
+# F0 extraction
+f0:
+  method: "dio"  # dio, harvest, or crepe
+  f0_min: 50
+  f0_max: 800
+  frame_period: 20  # ms
+
+# Model architecture
+model:
+  # Content Encoder (HuBERT-based)
+  content_encoder:
+    pretrained_hubert: "facebook/hubert-base-ls960"
+    freeze_hubert: false
+    hidden_size: 768
+    output_size: 256
+    use_instance_norm: true
+    
+  # VQ-VAE for content discretization
+  vq:
+    num_embeddings: 512
+    embedding_dim: 256
+    commitment_cost: 0.25
+    decay: 0.99
+    
+  # Prosody Encoder
+  prosody_encoder:
+    input_size: 1  # F0
+    hidden_size: 256
+    output_size: 64
+    num_layers: 2
+    bidirectional: true
+    
+  # Speaker Encoder
+  speaker_encoder:
+    input_size: 80  # mel spectrogram
+    hidden_size: 256
+    output_size: 128
+    num_layers: 3
+    
+  # Decoder
+  decoder:
+    hidden_size: 512
+    output_size: 80  # mel spectrogram
+    num_layers: 4
+    dropout: 0.1
+    
+  # Discriminators
+  discriminator:
+    # Content discriminator (adversarial for prosody removal)
+    content_disc:
+      hidden_size: 256
+      num_layers: 2
+    # Prosody discriminator
+    prosody_disc:
+      hidden_size: 128
+      num_layers: 2
+
+# Training settings
+training:
+  batch_size: 16
+  num_epochs: 200
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  warmup_steps: 10000
+  gradient_clip: 1.0
+  
+  # Loss weights
+  loss_weights:
+    reconstruction: 1.0
+    vq_commitment: 0.25
+    content_adversarial: 0.1  # GRL for content-prosody disentanglement
+    speaker_adversarial: 0.1
+    mi_minimization: 0.05     # Mutual information minimization
+    
+  # Multi-stage training
+  stages:
+    # Stage 1: Basic reconstruction
+    - epochs: 50
+      freeze: ["discriminator"]
+      loss_weights:
+        reconstruction: 1.0
+        vq_commitment: 0.25
+    # Stage 2: Add adversarial training
+    - epochs: 100
+      freeze: []
+      loss_weights:
+        reconstruction: 1.0
+        vq_commitment: 0.25
+        content_adversarial: 0.1
+    # Stage 3: Full training with MI minimization
+    - epochs: 50
+      freeze: []
+      loss_weights:
+        reconstruction: 1.0
+        vq_commitment: 0.25
+        content_adversarial: 0.1
+        mi_minimization: 0.05
+
+# Evaluation
+evaluation:
+  save_every: 5  # epochs
+  eval_every: 1
+  metrics:
+    - "reconstruction_loss"
+    - "dialect_classification_accuracy"
+    - "speaker_verification_eer"
+    - "abx_score"
+
+# Paths
+paths:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  output_dir: "outputs"
