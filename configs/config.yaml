@@ -2,9 +2,11 @@
 
 # Data settings
 data:
-  train_path: "data/train"
-  val_path: "data/val"
-  test_path: "data/test"
+  # 单一数据目录 + splits.json 方式
+  data_dir: "data"                    # 包含 metadata.json 和 preprocessed/
+  metadata_path: "data/metadata.json"
+  preprocessed_dir: "data/preprocessed"
+  splits_path: "data/splits.json"     # train/val/test 文件列表
   sample_rate: 16000
   max_audio_len: 10.0  # seconds
   hop_length: 320

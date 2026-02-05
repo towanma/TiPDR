@@ -382,24 +382,34 @@ def main():
     # Create datasets
     data_config = config.get("data", {})
     
-    # Load metadata
-    metadata_path = Path(data_config.get("train_path", "data")) / "metadata.json"
-    preprocessed_dir = Path(data_config.get("train_path", "data")) / "preprocessed"
+    # Load metadata and splits
+    metadata_path = Path(data_config.get("metadata_path", "data/metadata.json"))
+    preprocessed_dir = Path(data_config.get("preprocessed_dir", "data/preprocessed"))
+    splits_path = Path(data_config.get("splits_path", "data/splits.json"))
     
     if not metadata_path.exists():
-        print(f"Warning: Metadata not found at {metadata_path}")
+        print(f"Error: Metadata not found at {metadata_path}")
         print("Please run preprocessing first:")
-        print("  python -m data.preprocessor --data_root <path> --output_dir <path>")
+        print("  python scripts/preprocess_data.py --data_root <path> --output_dir <path>")
         return
     
     with open(metadata_path) as f:
         metadata = json.load(f)
     
-    # Split files (you should have this pre-computed)
-    all_files = list(metadata.get("files", {}).keys())
-    n_train = int(len(all_files) * 0.9)
-    train_files = all_files[:n_train]
-    val_files = all_files[n_train:]
+    # Load splits
+    if splits_path.exists():
+        with open(splits_path) as f:
+            splits = json.load(f)
+        train_files = splits.get("train", [])
+        val_files = splits.get("val", [])
+        print(f"Loaded splits: train={len(train_files)}, val={len(val_files)}")
+    else:
+        # Fallback: random split
+        print(f"Warning: splits.json not found, using random 90/10 split")
+        all_files = list(metadata.get("files", {}).keys())
+        n_train = int(len(all_files) * 0.9)
+        train_files = all_files[:n_train]
+        val_files = all_files[n_train:]
     
     # Create datasets
     train_dataset = TibetanSpeechDataset(
