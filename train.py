@@ -333,21 +333,27 @@ class Trainer:
             print(f"Train - Total: {train_losses['total_loss']:.4f}, "
                   f"Recon: {train_losses['reconstruction_total']:.4f}")
             
-            # Validate
+            # Validate (only if val_loader has data)
             eval_config = self.config.get("evaluation", {})
-            if (epoch + 1) % eval_config.get("eval_every", 1) == 0:
+            if (epoch + 1) % eval_config.get("eval_every", 1) == 0 and len(self.val_loader) > 0:
                 val_losses = self.validate()
                 
-                print(f"Val - Total: {val_losses['total_loss']:.4f}, "
-                      f"Recon: {val_losses['reconstruction_total']:.4f}")
-                
-                # Log to tensorboard
-                for k, v in val_losses.items():
-                    self.writer.add_scalar(f"val/{k}", v, self.current_epoch)
-                
-                # Save best model
-                if val_losses["total_loss"] < self.best_val_loss:
-                    self.best_val_loss = val_losses["total_loss"]
+                if val_losses and "total_loss" in val_losses:
+                    print(f"Val - Total: {val_losses['total_loss']:.4f}, "
+                          f"Recon: {val_losses['reconstruction_total']:.4f}")
+                    
+                    # Log to tensorboard
+                    for k, v in val_losses.items():
+                        self.writer.add_scalar(f"val/{k}", v, self.current_epoch)
+                    
+                    # Save best model
+                    if val_losses["total_loss"] < self.best_val_loss:
+                        self.best_val_loss = val_losses["total_loss"]
+                        self.save_checkpoint("best_model.pt")
+            elif len(self.val_loader) == 0:
+                # No validation data, save based on train loss
+                if train_losses["total_loss"] < self.best_val_loss:
+                    self.best_val_loss = train_losses["total_loss"]
                     self.save_checkpoint("best_model.pt")
             
             # Save periodic checkpoint
